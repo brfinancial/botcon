@@ -115,11 +115,11 @@ def _try_header_map(df: pd.DataFrame) -> Dict[str, str]:
         return None
 
     m = {}
-    m["data"]           = find_first(["data"])
-    m["conta_debito"]   = find_first(["conta debito", "conta débito", "debito", "débito", "conta origem", "cta deb"])
-    m["conta_credito"]  = find_first(["conta credito", "conta crédito", "credito", "crédito", "conta destino", "cta part", "cta c part"])
-    m["historico"]      = find_first(["historico", "hist", "histórico"])
-    m["valor"]          = find_first(["valor", "vlr"])
+    m["data"] = find_first(["data"])
+    m["conta_debito"] = find_first(["conta debito", "conta débito", "debito", "débito", "conta origem", "cta deb"])
+    m["conta_credito"] = find_first(["conta credito", "conta crédito", "credito", "crédito", "conta destino", "cta part", "cta c part"])
+    m["historico"] = find_first(["historico", "hist", "histórico"])
+    m["valor"] = find_first(["valor", "vlr"])
 
     essentials = ["data", "conta_debito", "conta_credito", "historico", "valor"]
     if all(m.get(k) for k in essentials):
@@ -210,10 +210,10 @@ def _wba_map_columns(df: pd.DataFrame) -> Dict[str, str]:
                     return v
         return None
 
-    deb  = pick(["deb", "cta.", "conta debito", "cta deb", "cta debito"])
+    deb = pick(["deb", "cta.", "conta debito", "cta deb", "cta debito"])
     cred = pick(["cred", "cta.c.part", "cta c part", "conta credito", "cta part", "cta credito"])
-    vlr  = pick(["vlr", "valor"])
-    dt   = pick(["data"])
+    vlr = pick(["vlr", "valor"])
+    dt = pick(["data"])
     hist = pick(["hist", "descr", "descricao"])
 
     need = [deb, cred, vlr, dt, hist]
@@ -473,10 +473,10 @@ def greedy_resolve(
 # ============================ Exportação Excel =================================
 
 def _format_dual_area_sheet(ws):
-    blue_fill  = PatternFill(start_color="DCE6F1", end_color="DCE6F1", fill_type="solid")
+    blue_fill = PatternFill(start_color="DCE6F1", end_color="DCE6F1", fill_type="solid")
     green_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
-    bold_font  = Font(bold=True)
-    center_v   = Alignment(vertical="center")
+    bold_font = Font(bold=True)
+    center_v = Alignment(vertical="center")
 
     for col_idx in range(1, 7):   # A..F (Contab)
         cell = ws.cell(row=1, column=col_idx)
@@ -567,19 +567,19 @@ def to_dual_records(contab_i: pd.DataFrame, wba_i: pd.DataFrame, matches: List[M
             w = wba_i.iloc[m.wba_idx]
 
         rows.append({
-            "ID CONTAB":         (int(m.contab_idx) if c is not None else None),
-            "CONTA DEB CONTAB":  (c["conta_debito"] if c is not None else None),
+            "ID CONTAB": (int(m.contab_idx) if c is not None else None),
+            "CONTA DEB CONTAB": (c["conta_debito"] if c is not None else None),
             "CONTA CRED CONTAB": (c["conta_credito"] if c is not None else None),
-            "DATA CONTAB":       (c["data"] if c is not None else None),
-            "VALOR CONTAB":      (round(float(c["valor"]), 2) if c is not None else None),
-            "HIST CONTAB":       (c["historico"] if c is not None else None),
+            "DATA CONTAB": (c["data"] if c is not None else None),
+            "VALOR CONTAB": (round(float(c["valor"]), 2) if c is not None else None),
+            "HIST CONTAB": (c["historico"] if c is not None else None),
 
-            "ID WBA":            (int(m.wba_idx) if w is not None else None),
-            "CONTA DEB WBA":     (w["conta_debito"] if w is not None else None),
-            "CONTA CRED WBA":    (w["conta_credito"] if w is not None else None),
-            "DATA WBA":          (w["data"] if w is not None else None),
-            "VALOR WBA":         (round(float(w["valor"]), 2) if w is not None else None),
-            "HIST WBA":          (w["historico"] if w is not None else None),
+            "ID WBA": (int(m.wba_idx) if w is not None else None),
+            "CONTA DEB WBA": (w["conta_debito"] if w is not None else None),
+            "CONTA CRED WBA": (w["conta_credito"] if w is not None else None),
+            "DATA WBA": (w["data"] if w is not None else None),
+            "VALOR WBA": (round(float(w["valor"]), 2) if w is not None else None),
+            "HIST WBA": (w["historico"] if w is not None else None),
         })
 
     df = pd.DataFrame(rows)
@@ -587,6 +587,121 @@ def to_dual_records(contab_i: pd.DataFrame, wba_i: pd.DataFrame, matches: List[M
         if c not in df.columns:
             df[c] = pd.Series(dtype="object")
     return df[cols]
+
+def compute_internal_duplicates(contab_i: pd.DataFrame, wba_i: pd.DataFrame) -> pd.DataFrame:
+    """
+    Detecta duplicidades internas em cada base, considerando:
+    - mesma data
+    - mesmo valor
+    - histórico exatamente igual
+
+    A comparação é feita separadamente:
+    - Contabilidade x Contabilidade
+    - WBA x WBA
+    """
+    cols = [
+        "ORIGEM",
+        "GRUPO_DUPLICIDADE",
+        "QTD_LANCAMENTOS",
+        "ID",
+        "CONTA_DEBITO",
+        "CONTA_CREDITO",
+        "DATA",
+        "VALOR",
+        "HISTORICO",
+    ]
+
+    frames = []
+
+    # -------------------- CONTABILIDADE --------------------
+    if contab_i is not None and not contab_i.empty:
+        c = contab_i.copy()
+
+        c["DATA"] = pd.to_datetime(c["data"], errors="coerce").dt.date
+        c["VALOR_R"] = pd.to_numeric(c["valor"], errors="coerce").round(2)
+        c["HIST_EXATO"] = c["historico"].astype(str).fillna("").str.strip()
+
+        grp_c = (
+            c.groupby(["DATA", "VALOR_R", "HIST_EXATO"], dropna=False)
+             .size()
+             .reset_index(name="QTD_LANCAMENTOS")
+        )
+        grp_c = grp_c[grp_c["QTD_LANCAMENTOS"] > 1].copy()
+
+        if not grp_c.empty:
+            grp_c["GRUPO_DUPLICIDADE"] = [
+                f"CONTAB_{i+1:04d}" for i in range(len(grp_c))
+            ]
+
+            c_merge = c.merge(
+                grp_c[["DATA", "VALOR_R", "HIST_EXATO", "QTD_LANCAMENTOS", "GRUPO_DUPLICIDADE"]],
+                on=["DATA", "VALOR_R", "HIST_EXATO"],
+                how="inner"
+            )
+
+            c_out = pd.DataFrame({
+                "ORIGEM": "CONTABILIDADE",
+                "GRUPO_DUPLICIDADE": c_merge["GRUPO_DUPLICIDADE"],
+                "QTD_LANCAMENTOS": c_merge["QTD_LANCAMENTOS"],
+                "ID": c_merge["contab_id"] if "contab_id" in c_merge.columns else c_merge.index,
+                "CONTA_DEBITO": c_merge["conta_debito"],
+                "CONTA_CREDITO": c_merge["conta_credito"],
+                "DATA": c_merge["DATA"],
+                "VALOR": c_merge["VALOR_R"],
+                "HISTORICO": c_merge["HIST_EXATO"],
+            })
+
+            frames.append(c_out[cols])
+
+    # -------------------- WBA --------------------
+    if wba_i is not None and not wba_i.empty:
+        w = wba_i.copy()
+
+        w["DATA"] = pd.to_datetime(w["data"], errors="coerce").dt.date
+        w["VALOR_R"] = pd.to_numeric(w["valor"], errors="coerce").round(2)
+        w["HIST_EXATO"] = w["historico"].astype(str).fillna("").str.strip()
+
+        grp_w = (
+            w.groupby(["DATA", "VALOR_R", "HIST_EXATO"], dropna=False)
+             .size()
+             .reset_index(name="QTD_LANCAMENTOS")
+        )
+        grp_w = grp_w[grp_w["QTD_LANCAMENTOS"] > 1].copy()
+
+        if not grp_w.empty:
+            grp_w["GRUPO_DUPLICIDADE"] = [
+                f"WBA_{i+1:04d}" for i in range(len(grp_w))
+            ]
+
+            w_merge = w.merge(
+                grp_w[["DATA", "VALOR_R", "HIST_EXATO", "QTD_LANCAMENTOS", "GRUPO_DUPLICIDADE"]],
+                on=["DATA", "VALOR_R", "HIST_EXATO"],
+                how="inner"
+            )
+
+            w_out = pd.DataFrame({
+                "ORIGEM": "WBA",
+                "GRUPO_DUPLICIDADE": w_merge["GRUPO_DUPLICIDADE"],
+                "QTD_LANCAMENTOS": w_merge["QTD_LANCAMENTOS"],
+                "ID": w_merge["wba_id"] if "wba_id" in w_merge.columns else w_merge.index,
+                "CONTA_DEBITO": w_merge["conta_debito"],
+                "CONTA_CREDITO": w_merge["conta_credito"],
+                "DATA": w_merge["DATA"],
+                "VALOR": w_merge["VALOR_R"],
+                "HISTORICO": w_merge["HIST_EXATO"],
+            })
+
+            frames.append(w_out[cols])
+
+    if not frames:
+        return pd.DataFrame(columns=cols)
+
+    out = pd.concat(frames, ignore_index=True)
+    out = out.sort_values(
+        ["ORIGEM", "DATA", "VALOR", "HISTORICO", "ID"]
+    ).reset_index(drop=True)
+
+    return out[cols]
 
 def compute_data_valor_conta_divergente(so_contab: pd.DataFrame, so_wba: pd.DataFrame) -> pd.DataFrame:
     base_cols = [
@@ -723,6 +838,23 @@ def export_excel_bytes(
     except Exception:
         logging.exception("Falha ao filtrar 'sobras' após DataValor_ContaDiff; mantendo originais.")
 
+    # Duplicidades internas por base
+    try:
+        duplicidades_internas_df = compute_internal_duplicates(contab_i, wba_i)
+    except Exception:
+        logging.exception("Falha ao calcular duplicidades internas; seguindo com aba vazia.")
+        duplicidades_internas_df = pd.DataFrame(columns=[
+            "ORIGEM",
+            "GRUPO_DUPLICIDADE",
+            "QTD_LANCAMENTOS",
+            "ID",
+            "CONTA_DEBITO",
+            "CONTA_CREDITO",
+            "DATA",
+            "VALOR",
+            "HISTORICO",
+        ])
+
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         # Bases (internas com id/valor_cents etc)
@@ -743,6 +875,10 @@ def export_excel_bytes(
             ])
         conta_diff_df.to_excel(writer, index=False, sheet_name="DataValor_ContaDiff")
         _format_simple_sheet(writer.book["DataValor_ContaDiff"])
+
+        # Duplicidades internas (mesma base)
+        duplicidades_internas_df.to_excel(writer, index=False, sheet_name="Duplicidades_Internas")
+        _format_simple_sheet(writer.book["Duplicidades_Internas"])
 
     buffer.seek(0)
     return buffer.getvalue()
@@ -795,6 +931,7 @@ if run:
             )
 
             resolved = greedy_resolve(contab_i, wba_i, cand)
+            duplicidades_internas_df = compute_internal_duplicates(contab_i, wba_i)
 
             resumo = {
                 "exato": len(resolved.get("exato", [])),
@@ -804,6 +941,9 @@ if run:
                 "fuzzy": len(resolved.get("fuzzy", [])),
                 "so_contabilidade": len(resolved.get("so_contabilidade", [])),
                 "so_wba": len(resolved.get("so_wba", [])),
+                "duplicidades_internas_total": len(duplicidades_internas_df),
+                "duplicidades_internas_contabilidade": int((duplicidades_internas_df["ORIGEM"] == "CONTABILIDADE").sum()) if not duplicidades_internas_df.empty else 0,
+                "duplicidades_internas_wba": int((duplicidades_internas_df["ORIGEM"] == "WBA").sum()) if not duplicidades_internas_df.empty else 0,
             }
 
             st.success("Conciliação concluída!")
@@ -826,6 +966,12 @@ if run:
                 st.dataframe(contab_i.head(30), use_container_width=True)
                 st.write("Base_WBA")
                 st.dataframe(wba_i.head(30), use_container_width=True)
+
+            with st.expander("Prévia de duplicidades internas"):
+                if duplicidades_internas_df.empty:
+                    st.info("Nenhuma duplicidade interna encontrada com a regra: mesma data + mesmo valor + histórico exatamente igual.")
+                else:
+                    st.dataframe(duplicidades_internas_df, use_container_width=True)
 
         except Exception as e:
             st.exception(e)
