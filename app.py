@@ -17,15 +17,11 @@ from openpyxl.utils import get_column_letter
 
 # ============================ Config / UI =====================================
 
-st.set_page_config(
-    page_title="Conciliação WBA x Contabilidade",
-    layout="wide"
-)
+st.set_page_config(page_title="Conciliação WBA x Contabilidade", layout="wide")
 
 st.title("Conciliação WBA x Contabilidade (Diário)")
-st.caption(
-    "Faça upload dos arquivos da Contabilidade (layout Diário) e do WBA, ajuste os parâmetros e gere o Excel final."
-)
+st.caption("Faça upload dos arquivos da Contabilidade (layout Diário) e do WBA, ajuste os parâmetros e gere o Excel final.")
+
 
 # ============================ Logging =========================================
 
@@ -98,6 +94,32 @@ def cents(v: float) -> Optional[int]:
         return None
     return int(np.rint(float(v) * 100.0))
 
+def parse_accounts_input(raw: str) -> List[str]:
+    """
+    Aceita: linhas, vírgulas, ponto-e-vírgula, tabs e espaços.
+    Normaliza via account_norm e remove vazios/duplicados.
+    """
+    if not raw:
+        return []
+    parts = re.split(r"[,\n;\t ]+", str(raw))
+    out: List[str] = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        n = account_norm(p)
+        if n:
+            out.append(n)
+
+    # remove duplicados preservando ordem
+    seen = set()
+    uniq: List[str] = []
+    for x in out:
+        if x not in seen:
+            uniq.append(x)
+            seen.add(x)
+    return uniq
+
 
 # ============================ Leitura Contabilidade (Diário) ==================
 
@@ -115,11 +137,11 @@ def _try_header_map(df: pd.DataFrame) -> Dict[str, str]:
         return None
 
     m = {}
-    m["data"] = find_first(["data"])
-    m["conta_debito"] = find_first(["conta debito", "conta débito", "debito", "débito", "conta origem", "cta deb"])
-    m["conta_credito"] = find_first(["conta credito", "conta crédito", "credito", "crédito", "conta destino", "cta part", "cta c part"])
-    m["historico"] = find_first(["historico", "hist", "histórico"])
-    m["valor"] = find_first(["valor", "vlr"])
+    m["data"]           = find_first(["data"])
+    m["conta_debito"]   = find_first(["conta debito", "conta débito", "debito", "débito", "conta origem", "cta deb"])
+    m["conta_credito"]  = find_first(["conta credito", "conta crédito", "credito", "crédito", "conta destino", "cta part", "cta c part"])
+    m["historico"]      = find_first(["historico", "hist", "histórico"])
+    m["valor"]          = find_first(["valor", "vlr"])
 
     essentials = ["data", "conta_debito", "conta_credito", "historico", "valor"]
     if all(m.get(k) for k in essentials):
@@ -210,10 +232,10 @@ def _wba_map_columns(df: pd.DataFrame) -> Dict[str, str]:
                     return v
         return None
 
-    deb = pick(["deb", "cta.", "conta debito", "cta deb", "cta debito"])
+    deb  = pick(["deb", "cta.", "conta debito", "cta deb", "cta debito"])
     cred = pick(["cred", "cta.c.part", "cta c part", "conta credito", "cta part", "cta credito"])
-    vlr = pick(["vlr", "valor"])
-    dt = pick(["data"])
+    vlr  = pick(["vlr", "valor"])
+    dt   = pick(["data"])
     hist = pick(["hist", "descr", "descricao"])
 
     need = [deb, cred, vlr, dt, hist]
@@ -247,7 +269,6 @@ def read_wba_to_standard(path_or_buffer: Union[str, BytesIO]) -> pd.DataFrame:
         df_raw[colmap["historico"]] = _strip_leading_equals_in_series(df_raw[colmap["historico"]])
 
     df = df_raw.rename(columns=colmap)[["conta_debito", "conta_credito", "valor", "data", "historico"]].copy()
-
     df["historico"] = _strip_leading_equals_in_series(df["historico"])
 
     for c in ["conta_debito", "conta_credito"]:
@@ -297,29 +318,24 @@ def build_candidates(
     """
     logging.info("Gerando candidatos...")
 
-    # Copia e garante índice posicional simples
     contab_i = contab.copy().reset_index(drop=True)
     wba_i = wba.copy().reset_index(drop=True)
 
-    # valor_cents robusto
     contab_i["valor_cents"] = contab_i["valor"].apply(cents)
     wba_i["valor_cents"] = wba_i["valor"].apply(cents)
 
-    # remove inválidos e reseta índice
     contab_i = contab_i.dropna(subset=["valor_cents"]).reset_index(drop=True)
     wba_i = wba_i.dropna(subset=["valor_cents"]).reset_index(drop=True)
 
     contab_i["valor_cents"] = contab_i["valor_cents"].astype(int)
     wba_i["valor_cents"] = wba_i["valor_cents"].astype(int)
 
-    # IDs estáveis (posicionais)
     contab_i["contab_id"] = np.arange(len(contab_i))
     wba_i["wba_id"] = np.arange(len(wba_i))
 
     def acct_key(a, b) -> Tuple[str, str]:
         return (a, b) if a <= b else (b, a)
 
-    # index exato
     idx_wba_exact: Dict[Tuple, List[int]] = {}
     for row in wba_i.itertuples(index=False):
         key = (row.data, row.valor_cents, acct_key(row.conta_debito, row.conta_credito))
@@ -333,7 +349,6 @@ def build_candidates(
         "fuzzy": [],
     }
 
-    # acesso rápido wba por id
     wba_by_id = {int(r.wba_id): r for r in wba_i.itertuples(index=False)}
 
     # 1) EXATO
@@ -345,8 +360,7 @@ def build_candidates(
                 continue
             sd = similarity(c.historico, w.historico)
             cand["exato"].append(
-                MatchRow(int(c.contab_id), int(wi), "exato", score=3.0 + sd,
-                         diff_dias=0, diff_valor=0.0, sim_desc=sd)
+                MatchRow(int(c.contab_id), int(wi), "exato", score=3.0 + sd, diff_dias=0, diff_valor=0.0, sim_desc=sd)
             )
 
     idx_wba_by_val: Dict[int, List[int]] = {}
@@ -404,8 +418,7 @@ def build_candidates(
                     dv = abs(float(c.valor) - float(w.valor))
                     score = (1.0 / (1 + dd)) + (1.0 / (1 + dv))
                     cand["valor_parecido_data_perto"].append(
-                        MatchRow(int(c.contab_id), int(w.wba_id), "valor_parecido_data_perto",
-                                 score, dd, dv, 0.0)
+                        MatchRow(int(c.contab_id), int(w.wba_id), "valor_parecido_data_perto", score, dd, dv, 0.0)
                     )
 
     # 5) fuzzy
@@ -422,8 +435,7 @@ def build_candidates(
                         dv = abs(float(c.valor) - float(w.valor))
                         score = (1.0 / (1 + dd)) + (1.0 / (1 + dv)) + sd
                         cand["fuzzy"].append(
-                            MatchRow(int(c.contab_id), int(w.wba_id), "fuzzy",
-                                     score, dd, dv, sd)
+                            MatchRow(int(c.contab_id), int(w.wba_id), "fuzzy", score, dd, dv, sd)
                         )
 
     for k in cand:
@@ -436,16 +448,12 @@ def greedy_resolve(
     wba_i: pd.DataFrame,
     cand: Dict[str, List[MatchRow]],
 ) -> Dict[str, List[MatchRow]]:
-    """
-    Resolve 1-para-1 usando os índices posicionais (contab_id/wba_id).
-    """
     logging.info("Resolvendo conflitos (1-para-1)...")
     assigned_c = set()
     assigned_w = set()
     result = {k: [] for k in cand.keys()}
 
-    priority = ["exato", "mesmo_valor_data_perto",
-                "mesmo_dia_valor_parecido", "valor_parecido_data_perto", "fuzzy"]
+    priority = ["exato", "mesmo_valor_data_perto", "mesmo_dia_valor_parecido", "valor_parecido_data_perto", "fuzzy"]
     for tier in priority:
         for m in cand[tier]:
             if (m.contab_idx not in assigned_c) and (m.wba_idx not in assigned_w):
@@ -473,10 +481,10 @@ def greedy_resolve(
 # ============================ Exportação Excel =================================
 
 def _format_dual_area_sheet(ws):
-    blue_fill = PatternFill(start_color="DCE6F1", end_color="DCE6F1", fill_type="solid")
+    blue_fill  = PatternFill(start_color="DCE6F1", end_color="DCE6F1", fill_type="solid")
     green_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
-    bold_font = Font(bold=True)
-    center_v = Alignment(vertical="center")
+    bold_font  = Font(bold=True)
+    center_v   = Alignment(vertical="center")
 
     for col_idx in range(1, 7):   # A..F (Contab)
         cell = ws.cell(row=1, column=col_idx)
@@ -529,6 +537,28 @@ def _format_simple_sheet(ws):
             max_len = max(max_len, len(v))
         ws.column_dimensions[col_letter].width = min(max(12, max_len + 2), 60)
 
+def _format_contadiff_sheet(ws):
+    header_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    bold_font = Font(bold=True)
+    center_v = Alignment(vertical="center")
+
+    for col_idx in range(1, ws.max_column + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = bold_font
+        cell.alignment = center_v
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+
+    for col in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            v = "" if cell.value is None else str(cell.value)
+            max_len = max(max_len, len(v))
+        ws.column_dimensions[col_letter].width = min(max(12, max_len + 2), 60)
+
 def _write_sheet(writer: pd.ExcelWriter, df: pd.DataFrame, name: str, dual: bool = False):
     if df is None:
         df = pd.DataFrame()
@@ -562,24 +592,23 @@ def to_dual_records(contab_i: pd.DataFrame, wba_i: pd.DataFrame, matches: List[M
 
         if m.contab_idx is not None and m.contab_idx != -1 and 0 <= m.contab_idx < len(contab_i):
             c = contab_i.iloc[m.contab_idx]
-
         if m.wba_idx is not None and m.wba_idx != -1 and 0 <= m.wba_idx < len(wba_i):
             w = wba_i.iloc[m.wba_idx]
 
         rows.append({
-            "ID CONTAB": (int(m.contab_idx) if c is not None else None),
-            "CONTA DEB CONTAB": (c["conta_debito"] if c is not None else None),
+            "ID CONTAB":         (int(m.contab_idx) if c is not None else None),
+            "CONTA DEB CONTAB":  (c["conta_debito"] if c is not None else None),
             "CONTA CRED CONTAB": (c["conta_credito"] if c is not None else None),
-            "DATA CONTAB": (c["data"] if c is not None else None),
-            "VALOR CONTAB": (round(float(c["valor"]), 2) if c is not None else None),
-            "HIST CONTAB": (c["historico"] if c is not None else None),
+            "DATA CONTAB":       (c["data"] if c is not None else None),
+            "VALOR CONTAB":      (round(float(c["valor"]), 2) if c is not None else None),
+            "HIST CONTAB":       (c["historico"] if c is not None else None),
 
-            "ID WBA": (int(m.wba_idx) if w is not None else None),
-            "CONTA DEB WBA": (w["conta_debito"] if w is not None else None),
-            "CONTA CRED WBA": (w["conta_credito"] if w is not None else None),
-            "DATA WBA": (w["data"] if w is not None else None),
-            "VALOR WBA": (round(float(w["valor"]), 2) if w is not None else None),
-            "HIST WBA": (w["historico"] if w is not None else None),
+            "ID WBA":            (int(m.wba_idx) if w is not None else None),
+            "CONTA DEB WBA":     (w["conta_debito"] if w is not None else None),
+            "CONTA CRED WBA":    (w["conta_credito"] if w is not None else None),
+            "DATA WBA":          (w["data"] if w is not None else None),
+            "VALOR WBA":         (round(float(w["valor"]), 2) if w is not None else None),
+            "HIST WBA":          (w["historico"] if w is not None else None),
         })
 
     df = pd.DataFrame(rows)
@@ -587,121 +616,6 @@ def to_dual_records(contab_i: pd.DataFrame, wba_i: pd.DataFrame, matches: List[M
         if c not in df.columns:
             df[c] = pd.Series(dtype="object")
     return df[cols]
-
-def compute_internal_duplicates(contab_i: pd.DataFrame, wba_i: pd.DataFrame) -> pd.DataFrame:
-    """
-    Detecta duplicidades internas em cada base, considerando:
-    - mesma data
-    - mesmo valor
-    - histórico exatamente igual
-
-    A comparação é feita separadamente:
-    - Contabilidade x Contabilidade
-    - WBA x WBA
-    """
-    cols = [
-        "ORIGEM",
-        "GRUPO_DUPLICIDADE",
-        "QTD_LANCAMENTOS",
-        "ID",
-        "CONTA_DEBITO",
-        "CONTA_CREDITO",
-        "DATA",
-        "VALOR",
-        "HISTORICO",
-    ]
-
-    frames = []
-
-    # -------------------- CONTABILIDADE --------------------
-    if contab_i is not None and not contab_i.empty:
-        c = contab_i.copy()
-
-        c["DATA"] = pd.to_datetime(c["data"], errors="coerce").dt.date
-        c["VALOR_R"] = pd.to_numeric(c["valor"], errors="coerce").round(2)
-        c["HIST_EXATO"] = c["historico"].astype(str).fillna("").str.strip()
-
-        grp_c = (
-            c.groupby(["DATA", "VALOR_R", "HIST_EXATO"], dropna=False)
-             .size()
-             .reset_index(name="QTD_LANCAMENTOS")
-        )
-        grp_c = grp_c[grp_c["QTD_LANCAMENTOS"] > 1].copy()
-
-        if not grp_c.empty:
-            grp_c["GRUPO_DUPLICIDADE"] = [
-                f"CONTAB_{i+1:04d}" for i in range(len(grp_c))
-            ]
-
-            c_merge = c.merge(
-                grp_c[["DATA", "VALOR_R", "HIST_EXATO", "QTD_LANCAMENTOS", "GRUPO_DUPLICIDADE"]],
-                on=["DATA", "VALOR_R", "HIST_EXATO"],
-                how="inner"
-            )
-
-            c_out = pd.DataFrame({
-                "ORIGEM": "CONTABILIDADE",
-                "GRUPO_DUPLICIDADE": c_merge["GRUPO_DUPLICIDADE"],
-                "QTD_LANCAMENTOS": c_merge["QTD_LANCAMENTOS"],
-                "ID": c_merge["contab_id"] if "contab_id" in c_merge.columns else c_merge.index,
-                "CONTA_DEBITO": c_merge["conta_debito"],
-                "CONTA_CREDITO": c_merge["conta_credito"],
-                "DATA": c_merge["DATA"],
-                "VALOR": c_merge["VALOR_R"],
-                "HISTORICO": c_merge["HIST_EXATO"],
-            })
-
-            frames.append(c_out[cols])
-
-    # -------------------- WBA --------------------
-    if wba_i is not None and not wba_i.empty:
-        w = wba_i.copy()
-
-        w["DATA"] = pd.to_datetime(w["data"], errors="coerce").dt.date
-        w["VALOR_R"] = pd.to_numeric(w["valor"], errors="coerce").round(2)
-        w["HIST_EXATO"] = w["historico"].astype(str).fillna("").str.strip()
-
-        grp_w = (
-            w.groupby(["DATA", "VALOR_R", "HIST_EXATO"], dropna=False)
-             .size()
-             .reset_index(name="QTD_LANCAMENTOS")
-        )
-        grp_w = grp_w[grp_w["QTD_LANCAMENTOS"] > 1].copy()
-
-        if not grp_w.empty:
-            grp_w["GRUPO_DUPLICIDADE"] = [
-                f"WBA_{i+1:04d}" for i in range(len(grp_w))
-            ]
-
-            w_merge = w.merge(
-                grp_w[["DATA", "VALOR_R", "HIST_EXATO", "QTD_LANCAMENTOS", "GRUPO_DUPLICIDADE"]],
-                on=["DATA", "VALOR_R", "HIST_EXATO"],
-                how="inner"
-            )
-
-            w_out = pd.DataFrame({
-                "ORIGEM": "WBA",
-                "GRUPO_DUPLICIDADE": w_merge["GRUPO_DUPLICIDADE"],
-                "QTD_LANCAMENTOS": w_merge["QTD_LANCAMENTOS"],
-                "ID": w_merge["wba_id"] if "wba_id" in w_merge.columns else w_merge.index,
-                "CONTA_DEBITO": w_merge["conta_debito"],
-                "CONTA_CREDITO": w_merge["conta_credito"],
-                "DATA": w_merge["DATA"],
-                "VALOR": w_merge["VALOR_R"],
-                "HISTORICO": w_merge["HIST_EXATO"],
-            })
-
-            frames.append(w_out[cols])
-
-    if not frames:
-        return pd.DataFrame(columns=cols)
-
-    out = pd.concat(frames, ignore_index=True)
-    out = out.sort_values(
-        ["ORIGEM", "DATA", "VALOR", "HISTORICO", "ID"]
-    ).reset_index(drop=True)
-
-    return out[cols]
 
 def compute_data_valor_conta_divergente(so_contab: pd.DataFrame, so_wba: pd.DataFrame) -> pd.DataFrame:
     base_cols = [
@@ -786,6 +700,7 @@ def export_excel_bytes(
     contab_i: pd.DataFrame,
     wba_i: pd.DataFrame,
     resolved: Dict[str, List[MatchRow]],
+    unico_contab: Optional[pd.DataFrame] = None,
 ) -> bytes:
     logging.info("Exportando Excel (BytesIO)...")
 
@@ -838,47 +753,34 @@ def export_excel_bytes(
     except Exception:
         logging.exception("Falha ao filtrar 'sobras' após DataValor_ContaDiff; mantendo originais.")
 
-    # Duplicidades internas por base
-    try:
-        duplicidades_internas_df = compute_internal_duplicates(contab_i, wba_i)
-    except Exception:
-        logging.exception("Falha ao calcular duplicidades internas; seguindo com aba vazia.")
-        duplicidades_internas_df = pd.DataFrame(columns=[
-            "ORIGEM",
-            "GRUPO_DUPLICIDADE",
-            "QTD_LANCAMENTOS",
-            "ID",
-            "CONTA_DEBITO",
-            "CONTA_CREDITO",
-            "DATA",
-            "VALOR",
-            "HISTORICO",
-        ])
+    # UnicoContab. (sempre presente)
+    if unico_contab is None:
+        unico_contab = pd.DataFrame(columns=["data", "conta_debito", "conta_credito", "valor", "historico"])
+    if not unico_contab.empty:
+        cols_keep = [c for c in ["data", "conta_debito", "conta_credito", "valor", "historico"] if c in unico_contab.columns]
+        unico_contab_export = unico_contab[cols_keep].copy() if cols_keep else unico_contab.copy()
+    else:
+        unico_contab_export = unico_contab.copy()
 
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        # Bases (internas com id/valor_cents etc)
-        _write_sheet(writer, contab_i, "Base_Contabilidade", dual=False)
-        _write_sheet(writer, wba_i, "Base_WBA", dual=False)
+        # Bases (removendo colunas internas, sem afetar matching)
+        base_contab_export = contab_i.drop(columns=["valor_cents", "contab_id"], errors="ignore")
+        base_wba_export = wba_i.drop(columns=["valor_cents", "wba_id"], errors="ignore")
+
+        _write_sheet(writer, base_contab_export, "Base_Contabilidade", dual=False)
+        _write_sheet(writer, base_wba_export, "Base_WBA", dual=False)
+
+        # NOVO: aba com lançamentos ignorados
+        _write_sheet(writer, unico_contab_export, "UnicoContab.", dual=False)
 
         # Camadas
         for _, title in title_map:
             _write_sheet(writer, dfs_dual.get(title, pd.DataFrame()), title, dual=True)
 
         # Aba nova
-        if conta_diff_df is None:
-            conta_diff_df = pd.DataFrame(columns=[
-                "DATA CONTAB", "VALOR CONTAB_R",
-                "ID CONTAB", "CONTA DEB CONTAB", "CONTA CRED CONTAB", "HIST CONTAB",
-                "ID WBA", "CONTA DEB WBA", "CONTA CRED WBA", "DATA WBA", "VALOR WBA", "HIST WBA",
-                "DEBITO_IGUAL", "CREDITO_IGUAL"
-            ])
         conta_diff_df.to_excel(writer, index=False, sheet_name="DataValor_ContaDiff")
-        _format_simple_sheet(writer.book["DataValor_ContaDiff"])
-
-        # Duplicidades internas (mesma base)
-        duplicidades_internas_df.to_excel(writer, index=False, sheet_name="Duplicidades_Internas")
-        _format_simple_sheet(writer.book["Duplicidades_Internas"])
+        _format_contadiff_sheet(writer.book["DataValor_ContaDiff"])
 
     buffer.seek(0)
     return buffer.getvalue()
@@ -893,6 +795,14 @@ with st.sidebar:
     tol_valor = st.number_input("Tolerância de valor (R$)", min_value=0.0, value=1.00, step=0.10, format="%.2f")
     limiar_desc = st.number_input("Limiar de similaridade (fuzzy)", min_value=0.0, max_value=1.0, value=0.62, step=0.01)
 
+    st.subheader("Exclusões (somente Contabilidade)")
+    contas_credito_ignorar_txt = st.text_area(
+        "Contas de CRÉDITO a ignorar na conciliação (uma por linha ou separadas por vírgula/;)",
+        value="",
+        height=90,
+        help="Essas contas serão removidas do matching e exportadas na aba 'UnicoContab.'."
+    )
+
 setup_logging_streamlit(verbosity=1 if verbosity == "INFO" else 2)
 
 colA, colB = st.columns(2)
@@ -902,7 +812,6 @@ with colB:
     wba_file = st.file_uploader("📄 WBA - Excel", type=["xlsx", "xls"])
 
 st.divider()
-
 run = st.button("🚀 Gerar conciliação", type="primary", use_container_width=True)
 
 def _to_buffer(uploaded_file) -> BytesIO:
@@ -921,17 +830,35 @@ if run:
             base_contab = read_contabilidade_to_standard(contab_buf)
             base_wba = read_wba_to_standard(wba_buf)
 
+            # --- NOVO: separar lançamentos de Contabilidade a serem ignorados ---
+            contas_ignorar = parse_accounts_input(contas_credito_ignorar_txt)
+
+            if contas_ignorar:
+                base_contab["conta_credito"] = base_contab["conta_credito"].apply(account_norm)
+                mask_unico = base_contab["conta_credito"].isin(contas_ignorar)
+
+                unico_contab = base_contab.loc[mask_unico].copy().reset_index(drop=True)
+                contab_para_match = base_contab.loc[~mask_unico].copy().reset_index(drop=True)
+
+                st.info(
+                    f"Excluindo da conciliação {len(unico_contab)} lançamentos da Contabilidade "
+                    f"(contas crédito: {', '.join(contas_ignorar)}). "
+                    f"Eles irão para a aba 'UnicoContab.'."
+                )
+            else:
+                unico_contab = pd.DataFrame(columns=base_contab.columns)
+                contab_para_match = base_contab
+
             tol_cents = int(round(float(tol_valor) * 100))
 
             cand, contab_i, wba_i = build_candidates(
-                base_contab, base_wba,
+                contab_para_match, base_wba,
                 janela_dias=int(janela_dias),
                 tol_valor_cents=tol_cents,
                 limiar_desc=float(limiar_desc),
             )
 
             resolved = greedy_resolve(contab_i, wba_i, cand)
-            duplicidades_internas_df = compute_internal_duplicates(contab_i, wba_i)
 
             resumo = {
                 "exato": len(resolved.get("exato", [])),
@@ -941,16 +868,14 @@ if run:
                 "fuzzy": len(resolved.get("fuzzy", [])),
                 "so_contabilidade": len(resolved.get("so_contabilidade", [])),
                 "so_wba": len(resolved.get("so_wba", [])),
-                "duplicidades_internas_total": len(duplicidades_internas_df),
-                "duplicidades_internas_contabilidade": int((duplicidades_internas_df["ORIGEM"] == "CONTABILIDADE").sum()) if not duplicidades_internas_df.empty else 0,
-                "duplicidades_internas_wba": int((duplicidades_internas_df["ORIGEM"] == "WBA").sum()) if not duplicidades_internas_df.empty else 0,
+                "unico_contab": int(len(unico_contab)),
             }
 
             st.success("Conciliação concluída!")
             st.subheader("Resumo")
             st.json(resumo)
 
-            xlsx_bytes = export_excel_bytes(contab_i, wba_i, resolved)
+            xlsx_bytes = export_excel_bytes(contab_i, wba_i, resolved, unico_contab=unico_contab)
             ts = datetime.now().strftime("%Y%m%d-%H%M%S")
 
             st.download_button(
@@ -961,17 +886,13 @@ if run:
                 use_container_width=True,
             )
 
-            with st.expander("Prévia (primeiras linhas da Base_Contabilidade e Base_WBA)"):
-                st.write("Base_Contabilidade")
+            with st.expander("Prévia (primeiras linhas das bases e UnicoContab.)"):
+                st.write("Base_Contabilidade (usada no matching)")
                 st.dataframe(contab_i.head(30), use_container_width=True)
                 st.write("Base_WBA")
                 st.dataframe(wba_i.head(30), use_container_width=True)
-
-            with st.expander("Prévia de duplicidades internas"):
-                if duplicidades_internas_df.empty:
-                    st.info("Nenhuma duplicidade interna encontrada com a regra: mesma data + mesmo valor + histórico exatamente igual.")
-                else:
-                    st.dataframe(duplicidades_internas_df, use_container_width=True)
+                st.write("UnicoContab. (fora do matching)")
+                st.dataframe(unico_contab.head(30), use_container_width=True)
 
         except Exception as e:
             st.exception(e)
